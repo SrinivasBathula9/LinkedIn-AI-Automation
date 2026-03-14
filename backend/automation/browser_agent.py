@@ -276,8 +276,18 @@ async def run_connection_campaign(campaign_id: str, region: str) -> None:
                 # Visit profile page to get real headline/title/location.
                 # Grow page cards don't expose job title in their DOM, so we
                 # must scrape the individual page before classifying.
-                detail = await scrape_profile_page(page, raw["linkedin_url"])
-                location = await scrape_profile_location(page)
+                try:
+                    detail = await scrape_profile_page(page, raw["linkedin_url"])
+                    location = await scrape_profile_location(page)
+                except Exception as e:
+                    err_str = str(e)
+                    if "TargetClosedError" in type(e).__name__ or "Target page" in err_str or "browser has been closed" in err_str:
+                        log.error("Browser page closed by LinkedIn — ending campaign early", region=region)
+                        async with AsyncSessionLocal() as _db:
+                            await log_event(_db, "error", f"Browser closed mid-campaign: {e}", {"region": region})
+                        break
+                    log.warning("Profile page scrape failed, skipping", url=raw["linkedin_url"], error=err_str)
+                    continue
                 raw["headline"] = detail.get("headline", "")
                 raw["location"] = location
                 # Replace placeholder title with real headline when possible
