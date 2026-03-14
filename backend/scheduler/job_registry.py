@@ -14,7 +14,7 @@ REGION_TIMEZONES: dict[str, str] = {
 }
 
 SCHEDULE_WINDOWS = [
-    {"hour": 7, "minute": 15},    # 9:00 AM local
+    {"hour": 7, "minute": 27},    # 9:00 AM local
     {"hour": 19, "minute": 0}    # 7:00 PM local
 ]
 
