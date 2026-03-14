@@ -75,29 +75,34 @@ async def launch_stealth_browser():
 
 
 async def _connect_button_visible(page: Page) -> bool:
-    """Check if the Connect button is present on a profile page (direct or under More dropdown)."""
-    selectors = [
-        "div.pvs-profile-actions button:has-text('Connect')",
-        "button:has-text('Connect')",
-    ]
-    for sel in selectors:
-        el = page.locator(sel)
-        if await el.count() > 0 and await el.first.is_visible():
-            return True
+    """Check if a Connect button is available in the profile actions area (direct or More dropdown).
+
+    IMPORTANT: always leaves the page in the same state as when called — any opened
+    More dropdown is closed before returning, so _click_connect can open it cleanly.
+    """
+    # Only check scoped profile-actions area — never match sidebar/recommendation buttons
+    direct = page.locator("div.pvs-profile-actions button:has-text('Connect')")
+    if await direct.count() > 0 and await direct.first.is_visible():
+        return True
 
     # Connect is sometimes hidden under the "More" overflow dropdown
-    more_btn = page.locator("div.pvs-profile-actions button:has-text('More'), button[aria-label*='More actions']")
+    more_btn = page.locator(
+        "div.pvs-profile-actions button:has-text('More'), "
+        "button[aria-label*='More actions']"
+    )
     if await more_btn.count() > 0 and await more_btn.first.is_visible():
         try:
             await more_btn.first.click()
-            await human_like_delay(0.5, 1)
-            menu_connect = page.locator("div[role='menu'] span:has-text('Connect'), .artdeco-dropdown__content li:has-text('Connect')")
-            # Must check is_visible() — element can resolve but be hidden
-            if await menu_connect.count() > 0 and await menu_connect.first.is_visible():
-                return True
-            # Close menu without selecting
+            await human_like_delay(1, 1.5)   # wait for dropdown animation
+            menu_connect = page.locator(
+                "div[role='menu'] span:has-text('Connect'), "
+                ".artdeco-dropdown__content li:has-text('Connect')"
+            )
+            found = await menu_connect.count() > 0 and await menu_connect.first.is_visible()
+            # Always close the dropdown — _click_connect must open it fresh
             await page.keyboard.press("Escape")
             await human_like_delay(0.3, 0.5)
+            return found
         except Exception:
             pass
 
@@ -141,10 +146,10 @@ async def _click_connect(page: Page, note: str) -> bool:
             else:
                 await page.keyboard.press("Escape")
                 log.warning("Connect not found/visible in More dropdown")
-                return False
+                return None  # sentinel: no button — caller should record as skipped
         else:
             log.warning("No Connect button found on profile page")
-            return False
+            return None  # sentinel: no button — caller should record as skipped
 
     await human_like_delay(1, 2)
 
@@ -405,11 +410,18 @@ async def _process_profile(page: Page, db, raw: dict, campaign_id: str, region: 
     except Exception:
         note = f"Hi {raw.get('full_name','').split()[0]}, I'd love to connect!"
 
-    success = await _click_connect(page, note)
-    status = "sent" if success else "failed"
-    await _record_request(db, profile.id, campaign_id, status, message_sent=note if success else None)
+    result = await _click_connect(page, note)
+    # None = no Connect button found (already connected/pending) → skipped
+    # False = button found, click attempted but could not confirm → failed
+    # True  = confirmed sent
+    if result is None:
+        await _record_request(db, profile.id, campaign_id, "skipped")
+        return False
 
-    if success:
+    status = "sent" if result else "failed"
+    await _record_request(db, profile.id, campaign_id, status, message_sent=note if result else None)
+
+    if result:
         await increment_sent_count(db, region)
         await log_event(db, "send", f"Connection sent to {raw.get('full_name')}", {"url": url, "region": region})
         await broadcast({
@@ -419,7 +431,7 @@ async def _process_profile(page: Page, db, raw: dict, campaign_id: str, region: 
             "region": region,
         })
 
-    return success
+    return result
 
 
 async def _record_request(db, profile_id, campaign_id: str | None, status: str, message_sent: str | None = None) -> None:
