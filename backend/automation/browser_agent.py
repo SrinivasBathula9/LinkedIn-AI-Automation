@@ -75,31 +75,77 @@ async def launch_stealth_browser():
 
 
 async def _connect_button_visible(page: Page) -> bool:
-    """Check if the Connect button is present on a profile page."""
+    """Check if the Connect button is present on a profile page (direct or under More dropdown)."""
     selectors = [
-        "button:has-text('Connect')",
         "div.pvs-profile-actions button:has-text('Connect')",
+        "button:has-text('Connect')",
     ]
     for sel in selectors:
         el = page.locator(sel)
         if await el.count() > 0 and await el.first.is_visible():
             return True
+
+    # Connect is sometimes hidden under the "More" overflow dropdown
+    more_btn = page.locator("div.pvs-profile-actions button:has-text('More'), button[aria-label*='More actions']")
+    if await more_btn.count() > 0 and await more_btn.first.is_visible():
+        try:
+            await more_btn.first.click()
+            await human_like_delay(0.5, 1)
+            menu_connect = page.locator("div[role='menu'] span:has-text('Connect'), .artdeco-dropdown__content li:has-text('Connect')")
+            # Must check is_visible() — element can resolve but be hidden
+            if await menu_connect.count() > 0 and await menu_connect.first.is_visible():
+                return True
+            # Close menu without selecting
+            await page.keyboard.press("Escape")
+            await human_like_delay(0.3, 0.5)
+        except Exception:
+            pass
+
     return False
 
 
 async def _click_connect(page: Page, note: str) -> bool:
     """Click Connect, optionally add a note, and confirm.
 
-    Success is determined by verifying the Connect button is gone after
-    the attempt (LinkedIn changes it to Pending/Message on success) —
-    not by whether intermediate button clicks raised exceptions.
+    Handles both direct Connect button and Connect hidden under More dropdown.
+    Success is determined by detecting a Pending button or the Connect button
+    disappearing from the profile actions area.
     """
     if settings.dry_run:
         log.info("DRY RUN: Skipping connect click")
         return True
 
-    connect_btn = page.locator("button:has-text('Connect')").first
-    await connect_btn.click()
+    # Track click path — needed for scoped success check below
+    via_direct_connect = False
+
+    # Prefer profile-actions-scoped Connect to avoid clicking sidebar/recommended buttons
+    actions_connect = page.locator("div.pvs-profile-actions button:has-text('Connect')")
+    if await actions_connect.count() > 0 and await actions_connect.first.is_visible():
+        await actions_connect.first.click()
+        via_direct_connect = True
+    else:
+        # Try More dropdown path
+        more_btn = page.locator("div.pvs-profile-actions button:has-text('More'), button[aria-label*='More actions']")
+        if await more_btn.count() > 0 and await more_btn.first.is_visible():
+            await more_btn.first.click()
+            await human_like_delay(0.5, 1)
+            menu_connect = page.locator("div[role='menu'] span:has-text('Connect'), .artdeco-dropdown__content li:has-text('Connect')")
+            # Must check is_visible() — resolved element may still be hidden
+            if await menu_connect.count() > 0 and await menu_connect.first.is_visible():
+                try:
+                    await menu_connect.first.click(timeout=5000)
+                except Exception:
+                    await page.keyboard.press("Escape")
+                    log.warning("More dropdown Connect click failed")
+                    return False
+            else:
+                await page.keyboard.press("Escape")
+                log.warning("Connect not found/visible in More dropdown")
+                return False
+        else:
+            log.warning("No Connect button found on profile page")
+            return False
+
     await human_like_delay(1, 2)
 
     send_inv     = page.locator("button[aria-label='Send invitation'], button[aria-label='Send now']")
@@ -138,25 +184,44 @@ async def _click_connect(page: Page, note: str) -> bool:
             except Exception:
                 log.warning("Generic Send button unreachable")
 
-    await human_like_delay(1, 2)
+    await human_like_delay(2, 3)
 
     # ── Definitive success check ──────────────────────────────────────────────
-    # After a successful send LinkedIn closes the modal and changes the profile
-    # button from "Connect" → "Pending" / "Message".  If the Connect button is
-    # gone we know the invitation was dispatched, regardless of any intermediate
-    # click exceptions.
-    try:
-        await page.locator("button:has-text('Connect')").wait_for(state="hidden", timeout=4000)
-        log.info("Connection sent — Connect button gone (Pending/Message)")
+    pending_btn = page.locator(
+        "div.pvs-profile-actions button:has-text('Pending'), "
+        ".artdeco-button:has-text('Pending'), "
+        "button[aria-label*='Pending']"
+    )
+
+    # Check 1: "Pending" button appears (works for all click paths)
+    if await pending_btn.count() > 0 and await pending_btn.first.is_visible():
+        log.info("Connection sent — Pending button detected")
         return True
-    except Exception:
-        pass
+
+    # Check 2: Connect button gone — ONLY valid for direct-button path.
+    # wait_for(state="hidden") returns immediately when selector matches 0 elements,
+    # which would be a false positive for profiles that never had a direct Connect button.
+    if via_direct_connect:
+        try:
+            await page.locator("div.pvs-profile-actions button:has-text('Connect')").wait_for(
+                state="hidden", timeout=6000
+            )
+            log.info("Connection sent — Connect button gone from profile actions")
+            return True
+        except Exception:
+            pass
+
+    # Check 3: Delayed re-check for Pending
+    await human_like_delay(1, 2)
+    if await pending_btn.count() > 0 and await pending_btn.first.is_visible():
+        log.info("Connection sent — Pending button detected (delayed)")
+        return True
 
     # Dismiss stale modal if still open
     dismiss = page.locator("button:has-text('Dismiss')")
     if await dismiss.count() > 0:
         await dismiss.click()
-    log.warning("Connect button still visible after send attempt — marking failed")
+    log.warning("Could not confirm connection send — marking failed")
     return False
 
 
@@ -192,7 +257,7 @@ async def run_connection_campaign(campaign_id: str, region: str) -> None:
         await _warm_up(page)
 
         # No keywords needed for the My Network -> Grow page
-        raw_profiles = await search_profiles(page, region=region, max_results=30)
+        raw_profiles = await search_profiles(page, region=region, max_results=50)
         log.info("Grow page extraction complete", count=len(raw_profiles), region=region)
 
         sent_count = 0
@@ -226,7 +291,7 @@ async def run_connection_campaign(campaign_id: str, region: str) -> None:
                     continue
 
                 raw["relevance_score"] = compute_relevance_score(raw, campaign_regions=[])
-                if raw["relevance_score"] < 30:
+                if raw["relevance_score"] < 20:
                     log.info("Skipping low score profile", name=raw.get("full_name"), score=raw["relevance_score"])
                     continue
 

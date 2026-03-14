@@ -4,9 +4,15 @@ import uvicorn
 
 if __name__ == "__main__":
     if sys.platform == "win32":
-        # Force ProactorEventLoop on Windows so Playwright can use subprocesses
+        # ProactorEventLoop is required for Playwright subprocess support on Windows.
+        # reload=True is incompatible with ProactorEventLoop (triggers WinError 87
+        # in asyncio IOCP socket accept). Keep reload=False in production.
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    
-    # Run uvicorn programmatically, setting loop="none" so it doesn't try to 
-    # override the ProactorEventLoopPolicy we just set.
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True, loop="none")
+
+    uvicorn.run(
+        "backend.main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=False,   # reload=True conflicts with ProactorEventLoop on Windows
+        loop="none",    # don't override our event loop policy
+    )
