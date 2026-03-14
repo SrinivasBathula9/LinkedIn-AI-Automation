@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.egg
+*.pyc
+
+# Models
+models/
+
+# Secrets / sessions — NEVER commit these
+.env
+!.env.example
+.linkedin_session.json
+linkedin_session.json
+*.session.json
+secrets/
+*.pem
+*.key
+credentials.json
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker volumes
+postgres_data/
+qdrant_data/
+ollama_models/
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
