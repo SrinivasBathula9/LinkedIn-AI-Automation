@@ -232,6 +232,137 @@ The scheduler will automatically fire at 9 AM and 7 PM in each selected region's
 
 ---
 
+## Operations Guide
+
+### Docker — First-Time Setup
+
+```bash
+# 1. Build images (one-time, ~5 min — includes Playwright + Chromium)
+docker compose -p linkedin -f docker/docker-compose.automation.yml build
+
+# 2. Start containers
+docker compose -p linkedin -f docker/docker-compose.automation.yml up -d
+
+# 3. Run database migrations (one-time)
+docker exec linkedin-backend-1 alembic upgrade head
+
+# 4. Verify all 5 containers are up
+docker ps --format "table {{.Names}}\t{{.Status}}"
+
+# 5. Verify API is live
+curl http://localhost:8000/health
+# Expected: {"status":"ok","version":"1.0.0"}
+```
+
+### Docker — Daily Commands
+
+```bash
+# Start automation stack
+docker compose -p linkedin -f docker/docker-compose.automation.yml up -d
+
+# Stop automation stack
+docker compose -p linkedin -f docker/docker-compose.automation.yml stop
+
+# Restart backend only (after code changes — no rebuild needed)
+docker restart linkedin-backend-1
+
+# Restart celery worker
+docker restart linkedin-celery_worker-1
+
+# Rebuild after requirements.txt or Dockerfile changes
+docker compose -p linkedin -f docker/docker-compose.automation.yml build
+docker compose -p linkedin -f docker/docker-compose.automation.yml up -d
+```
+
+### Logs
+
+```bash
+# Backend logs (scheduler + API)
+docker logs linkedin-backend-1
+docker logs -f linkedin-backend-1            # follow live
+docker logs --tail 50 linkedin-backend-1     # last 50 lines
+
+# Celery worker logs
+docker logs -f linkedin-celery_worker-1
+
+# Filter: scheduler fires only
+docker logs linkedin-backend-1 2>&1 | grep "Scheduled job\|APScheduler\|Job registered"
+
+# Filter: errors only
+docker logs linkedin-backend-1 2>&1 | grep -i "error\|exception\|failed"
+
+# Startup log (written by Task Scheduler bat scripts)
+type automation_startup.log
+```
+
+### Scheduler — Change Job Times
+
+Edit `backend/scheduler/job_registry.py`:
+
+```python
+SCHEDULE_WINDOWS = [
+    {"hour": 9,  "minute": 0},    # 9:00 AM local per region
+    {"hour": 19, "minute": 0},    # 7:00 PM local per region
+]
+```
+
+Then apply without rebuilding:
+```bash
+docker restart linkedin-backend-1
+```
+
+Verify jobs reloaded:
+```bash
+docker logs linkedin-backend-1 | grep "APScheduler started"
+# Expected: APScheduler started  job_count=12
+```
+
+### Scheduler — Windows Task Scheduler Auto-Start
+
+```
+run_as_admin.bat          — register/update daily start tasks (run as Admin)
+start_automation.bat      — manually start containers + schedule auto-stop
+stop_automation.bat       — immediately stop all containers
+```
+
+Change auto-start times by editing `register_schedule_tasks.ps1`:
+```powershell
+$MorningStart = "08:55"    # 5 min before morning job window
+$EveningStart = "23:15"    # 5 min before evening job window
+```
+Then re-run `run_as_admin.bat`.
+
+### Database
+
+```bash
+# Run migrations
+docker exec linkedin-backend-1 alembic upgrade head
+
+# List tables
+docker exec linkedin-postgres-1 psql -U user -d linkedin_db -c "\dt"
+
+# Connect to psql
+docker exec -it linkedin-postgres-1 psql -U user -d linkedin_db
+
+# Useful queries
+docker exec linkedin-postgres-1 psql -U user -d linkedin_db -c \
+  "SELECT id, name, target_regions, is_active FROM campaigns;"
+
+docker exec linkedin-postgres-1 psql -U user -d linkedin_db -c \
+  "SELECT status, count(*) FROM connection_requests WHERE sent_at >= CURRENT_DATE GROUP BY status;"
+```
+
+### API Quick Tests
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/api/campaigns
+curl http://localhost:8000/api/stats/overview
+curl http://localhost:8000/api/logs?limit=10
+```
+
+---
+
 ## Configuration (`.env.example`)
 
 ```env

@@ -1,19 +1,22 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
 # Install system deps for Playwright + psycopg2
+# Do NOT clean apt lists here — playwright install --with-deps needs them
 RUN apt-get update && apt-get install -y \
     curl wget gnupg ca-certificates \
-    libpq-dev gcc g++ \
-    && rm -rf /var/lib/apt/lists/*
+    libpq-dev gcc g++
 
 # Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
-RUN playwright install chromium --with-deps
+# Install Playwright Chromium + its OS-level dependencies
+# --with-deps runs apt-get internally, so apt lists must still be present
+# Clean up after so the image stays lean
+RUN playwright install chromium --with-deps \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 

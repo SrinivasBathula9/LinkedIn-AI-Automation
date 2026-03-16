@@ -1,0 +1,75 @@
+version: "3.9"
+
+# Lean automation-only stack — only what's needed to run campaigns.
+# Started by Task Scheduler before each window, stopped after.
+# Does NOT include: frontend, ollama, prometheus, grafana.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: linkedin_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d linkedin_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    env_file: ../.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/linkedin_db
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ../backend:/app/backend
+      - ../models:/app/models
+
+  celery_worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    command: celery -A backend.queue.celery_app worker --loglevel=info -Q automation,ai
+    env_file: ../.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/linkedin_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - postgres
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
